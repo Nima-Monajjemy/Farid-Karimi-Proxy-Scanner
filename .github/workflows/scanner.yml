@@ -1,0 +1,43 @@
+name: GeoIP V2Ray Scanner
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run-scanner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Python Dependencies
+        run: pip install requests
+
+      - name: Run Proxy Scanner
+        run: python proxy_scanner.py
+
+      - name: Commit and Push Results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add working_proxies.txt geoip_database.db || true
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "🌐 Update working proxies with GeoIP & Purge dead nodes"
+            git pull --rebase origin main
+            git push origin main
+          fi
