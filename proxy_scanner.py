@@ -1,68 +1,3 @@
-این درخواست یک جهشِ بزرگ و حرفه‌ای در معماریِ پروژه شماست! با این کار شما عملاً یک «سیستم توزیع پروکسیِ دوگانه» (Dual-Channel Proxy Distribution) می‌سازید.
-
-در این آپدیت:
-
-1. **لیست `all_proxies.txt`:** تمام کانفیگ‌های موجود در سورس (بدون تست اتصال) را دریافت، **تکراری‌گیری (Deduplicate)**، و بر اساس لوکیشن تغییر نام می‌دهد.
-2. **لیست `working_proxies.txt`:** همان کانفیگ‌ها را از تونلِ تست و فیلترینگ عبور داده و فقط سالم‌ها را نگه می‌دارد.
-3. **ذخیره‌سازیِ زنده (Live Sync):** هر ۵۰ عدد کانفیگی که بررسی می‌شود، سیستم متوقف نمی‌شود؛ بلکه کانفیگ‌های موفقی که تا این لحظه پیدا کرده را به همراه لیست کُل، روی گیت‌هاب می‌فرستد تا شما در لحظه بتوانید از کانفیگ‌های جدید استفاده کنید.
-4. **حذف محدودیت:** کد تا آخرین کانفیگ موجود در سورس را اسکن خواهد کرد (بدون سقف عددی).
-
-### ۱. فایل `yml` گیت‌هاب اکشنز (`scanner.yml`)
-
-این کد را در فایل yml خود جایگزین کنید (مدت زمان تایم‌اوت را روی ۳۵۰ دقیقه نگه داشتم تا کد فرصت کند هزاران کانفیگ را تا انتها اسکن کند):
-
-```yaml
-name: GeoIP V2Ray Scanner
-
-on:
-  schedule:
-    - cron: '0 */4 * * *'
-  workflow_dispatch:
-
-permissions:
-  contents: write
-
-jobs:
-  run-scanner:
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install Python Dependencies
-        run: pip install requests
-
-      - name: Run Proxy Scanner
-        run: python proxy_scanner.py
-
-      - name: Commit and Push Results
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add working_proxies.txt all_proxies.txt geoip_database.db || true
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "🌐 Live Update: Working & All Proxies Synced"
-            git pull --rebase origin main
-            git push origin main
-          fi
-
-```
-
-### ۲. فایل اصلی پایتون (`proxy_scanner.py`)
-
-این اسکریپت را به جای اسکریپت قبلیِ خود قرار دهید:
-
-```python
 import os, re, subprocess, tempfile, json, time, requests, shutil, base64, sqlite3
 import urllib.parse
 
@@ -405,5 +340,3 @@ if __name__ == "__main__":
 
     shutil.rmtree(os.path.dirname(xray_bin), ignore_errors=True)
     print(f"\n🎉 پایان موفقیت‌آمیز عملیات!")
-
-```
