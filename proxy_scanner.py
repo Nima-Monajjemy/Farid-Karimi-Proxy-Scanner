@@ -8,12 +8,32 @@ DB_FILE = "geoip_database.db"
 
 TEST_URL = "http://www.gstatic.com/generate_204"
 TEST_TIMEOUT = 4.0
-BATCH_SIZE = 30       # تعداد کانفیگ‌ها در هر بسته برای ذخیره و پوش کردن
-MAX_RETESTS = 100     # تعداد کانفیگ‌های قدیمی که برای حذف شدن یا ماندن ری‌تست می‌شوند
-MAX_FAILURES = 1      # چند بار اتصال ناموفق باعث حذف کانفیگ شود
-EXPIRY_HOURS = 12     # زمان انقضای تست قبلی (به ساعت)
+BATCH_SIZE = 30       
+MAX_RETESTS = 100     
+MAX_FAILURES = 2      
+EXPIRY_HOURS = 12     
 
-# ==================== توابع کمکی ====================
+# ==================== توابع کمکی و ضدافزونگی (Deduplication) ====================
+def get_clean_config_id(link):
+    """
+    این تابع بخش‌های متغیر (مثل نام کانفیگ) را حذف می‌کند تا 
+    شناسه هویتی و واقعی کانفیگ برای جلوگیری از تکرار استخراج شود.
+    """
+    try:
+        if link.startswith("vmess://"):
+            b64 = link[8:]
+            b64 += "=" * ((4 - len(b64) % 4) % 4)
+            data = json.loads(base64.b64decode(b64).decode('utf-8'))
+            if "ps" in data:
+                del data["ps"]  # حذف نام کانفیگ
+            # مرتب‌سازی کلیدها برای جلوگیری از تفاوت ظاهری جیسون
+            return "vmess://" + json.dumps(data, sort_keys=True)
+        else:
+            # در vless, trojan, ss نام کانفیگ بعد از # قرار دارد که حذف می‌شود
+            return link.split("#")[0]
+    except:
+        return link
+
 def get_flag_emoji(country_code):
     if not country_code or len(country_code) != 2: return "🌍"
     return "".join(chr(ord(c) + 127397) for c in country_code.upper())
@@ -44,14 +64,12 @@ def rename_config(link, country_name, country_code):
     except:
         return link
 
-# ==================== دیتابیس (ارتقا یافته با لیست سیاه) ====================
+# ==================== دیتابیس ====================
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # جدول کانفیگ‌های موفق و متصل
     c.execute('''CREATE TABLE IF NOT EXISTS proxies
                  (link TEXT PRIMARY KEY, delay REAL, country TEXT, cc TEXT, last_test REAL, fails INTEGER)''')
-    # جدول قبرستان (کانفیگ‌های تست شده اما ناموفق)
     c.execute('''CREATE TABLE IF NOT EXISTS failed_proxies
                  (link TEXT PRIMARY KEY, last_seen REAL)''')
     conn.commit()
@@ -65,6 +83,44 @@ def execute_db(query, args=()):
     conn.commit()
     conn.close()
     return res
+
+def remove_duplicates_from_db():
+    """ اسکن دیتابیس و حذف کانفیگ‌هایی که مغزشان یکی است اما نامشان متفاوت است """
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT link FROM proxies")
+    rows = c.fetchall()
+    
+    seen_ids = set()
+    duplicates = []
+    
+    for (link,) in rows:
+        cid = get_clean_config_id(link)
+        if cid in seen_ids:
+            duplicates.append(link)
+        else:
+            seen_ids.add(cid)
+            
+    for dup in duplicates:
+        c.execute("DELETE FROM proxies WHERE link=?", (dup,))
+        
+    conn.commit()
+    conn.close()
+    if duplicates:
+        print(f"🧹 پاکسازی هوشمند: {len(duplicates)} کانفیگ تکراری (با نام‌های مختلف) از دیتابیس حذف شدند.")
+
+def get_all_cached_ids():
+    """ دریافت شناسه هویتی تمام کانفیگ‌های تست شده (موفق و ناموفق) """
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT link FROM proxies")
+    valid_ids = [get_clean_config_id(r[0]) for r in c.fetchall()]
+    
+    c.execute("SELECT link FROM failed_proxies")
+    failed_ids = [get_clean_config_id(r[0]) for r in c.fetchall()]
+    conn.close()
+    
+    return set(valid_ids).union(set(failed_ids))
 
 # ==================== مدیریت گیت‌هاب (Push مرحله‌ای) ====================
 def setup_git():
@@ -101,9 +157,8 @@ def get_raw_configs():
         try: text = base64.b64decode(text).decode('utf-8')
         except: pass
         links = re.findall(r'(?:vless|vmess|trojan|ss)://\S+', text)
-        unique_links = list(set(links))
-        print(f"📋 {len(unique_links)} کانفیگ یکتا از منبع استخراج شد.")
-        return unique_links
+        print(f"📋 {len(links)} کانفیگ از منبع استخراج شد.")
+        return links
     except Exception as e:
         print(f"⚠️ خطا در دریافت سورس: {e}")
         return []
@@ -185,7 +240,6 @@ def test_connectivity_and_geo(xray_bin, link):
         delay = float(res.stdout.strip()) * 1000
         is_ok = True
         
-        # تست لوکیشن (GeoIP)
         try:
             geo_res = subprocess.run(["curl", "-s", "--socks5-hostname", "127.0.0.1:10808", "http://ip-api.com/json?fields=status,country,countryCode", "--connect-timeout", "4"], capture_output=True, text=True)
             if geo_res.returncode == 0:
@@ -208,23 +262,29 @@ if __name__ == "__main__":
     setup_git()
     init_db()
     
-    # حذف کانفیگ‌های لیست سیاه که قدیمی‌تر از ۷ روز هستند (جلوگیری از حجیم شدن دیتابیس)
+    # 1. پاکسازی دیتابیس از کانفیگ‌های تکراری و حذف بلک‌لیست‌های قدیمی
+    remove_duplicates_from_db()
     execute_db("DELETE FROM failed_proxies WHERE last_seen < ?", (time.time() - 7 * 24 * 3600,))
     
     raw_links = get_raw_configs()
     xray_bin = download_xray()
     
-    # واکشی تمام کانفیگ‌های تست شده (چه موفق، چه ناموفق)
-    cached_valid = {r[0] for r in execute_db("SELECT link FROM proxies")}
-    cached_failed = {r[0] for r in execute_db("SELECT link FROM failed_proxies")}
-    all_cached = cached_valid.union(cached_failed)
+    # دریافت لیست شناسه تمام کانفیگ‌های قبلی (موفق و ناموفق)
+    cached_ids = get_all_cached_ids()
     
-    # -------- 1. تست کانفیگ‌های کاملا جدید (موجود در سورس اما غایب در حافظه) --------
-    new_links = [lk for lk in raw_links if lk not in all_cached]
+    # 2. فیلتر کردن کانفیگ‌های جدید بر اساس شناسه هویتی (نه رشته خام)
+    new_links = []
+    seen_in_batch = set()
+    for lk in raw_links:
+        cid = get_clean_config_id(lk)
+        if cid not in cached_ids and cid not in seen_in_batch:
+            new_links.append(lk)
+            seen_in_batch.add(cid)
+
     total_new = len(new_links)
     
     if total_new > 0:
-        print(f"\n🧪 شروع تست {total_new} کانفیگ کاملا جدید...")
+        print(f"\n🧪 شروع تست {total_new} کانفیگ کاملا جدید و غیرتکراری...")
         new_in_batch = 0
         
         for i, link in enumerate(new_links, 1):
@@ -234,11 +294,9 @@ if __name__ == "__main__":
                 print(f"[{i}/{total_new}] ✅ {c_name} ({dly:.0f}ms)")
                 new_in_batch += 1
             else:
-                # ثبت در لیست سیاه تا دیگر تست نشود
                 execute_db("INSERT OR REPLACE INTO failed_proxies VALUES (?, ?)", (link, time.time()))
                 print(f"[{i}/{total_new}] ❌ (انتقال به لیست سیاه)")
                 
-            # ذخیره و Push کردن مرحله‌ای هر BATCH_SIZE کانفیگ (یا در آخرین کانفیگ)
             if i % BATCH_SIZE == 0 or i == total_new:
                 if new_in_batch > 0:
                     print(f"\n⏳ رسیدن به بسته {i}. در حال ذخیره و Push کردن {new_in_batch} کانفیگ موفق اخیر...")
@@ -247,7 +305,7 @@ if __name__ == "__main__":
     else:
         print("\n✅ کانفیگ کاملاً جدیدی در سورس یافت نشد.")
 
-    # -------- 2. پالایش و ری‌تست کانفیگ‌های قدیمی (حذف مرده‌ها) --------
+    # -------- 3. پالایش و ری‌تست کانفیگ‌های قدیمی (حذف مرده‌ها) --------
     expired = execute_db(f"SELECT link, fails FROM proxies WHERE last_test < {time.time() - EXPIRY_HOURS * 3600} LIMIT {MAX_RETESTS}")
     if expired:
         print(f"\n🔄 شروع ری‌تست {len(expired)} کانفیگ قدیمی در لیست نهایی...")
@@ -260,7 +318,6 @@ if __name__ == "__main__":
                 print(f"[{i}/{len(expired)}] 🔁 ✅ زنده ماند")
             else:
                 if fails + 1 >= MAX_FAILURES:
-                    # حذف از لیست موفق‌ها و انتقال به لیست سیاه
                     execute_db("DELETE FROM proxies WHERE link=?", (link,))
                     execute_db("INSERT OR REPLACE INTO failed_proxies VALUES (?, ?)", (link, time.time()))
                     print(f"[{i}/{len(expired)}] 🔁 🗑️ حذف و به لیست سیاه منتقل شد")
