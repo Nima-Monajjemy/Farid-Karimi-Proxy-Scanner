@@ -9,9 +9,9 @@ DB_FILE = "geoip_database.db"
 
 TEST_URL = "http://www.gstatic.com/generate_204"
 TEST_TIMEOUT = 5.0
-BATCH_SIZE = 50       # آپدیت گیت‌هاب پس از هر ۵۰ تست
+BATCH_SIZE = 30       # آپدیت گیت‌هاب پس از هر ۵۰ تست
 MAX_RETESTS = 100     # تعداد کانفیگ‌های قدیمی برای ری‌تست
-MAX_FAILURES = 1      # حذف پس از چند بار شکست
+MAX_FAILURES = 2      # حذف پس از چند بار شکست
 EXPIRY_HOURS = 12     # ری‌تست پس از چند ساعت
 PURGE_INTERVAL = 3    # هر چند بار اجرا، کل دیتابیس شخم زده شود
 
